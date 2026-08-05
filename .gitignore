@@ -1,0 +1,8 @@
+out/
+output/
+raw_store/
+venvRia/
+.env
+*.log
+*.csv
+*.jsonl

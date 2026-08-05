@@ -1,0 +1,44 @@
+# Oda TV — political/opinion columnist ALLOW-LIST (in-scope for the KuKi corpus)
+#
+# Oda TV's /yazarlar roster is a FLAT grid with NO category grouping, and genre
+# is per-author (political writers mixed with sport/food/health/TV/pets/culture).
+# There is no opinion-only section (/yorum, /gorus = 404; /analiz mixes news),
+# so this operator-curated allow-list IS the selection gate. Slugs verified live
+# (2026-07). Only slugs listed here are harvested. GastrOda lives under the
+# /gastroda/ path and is excluded structurally by the scraper's URL scoping.
+#
+# --- IN SCOPE: political opinion / analysis (current index) ---
+soner-yalcin
+hurrem-elmasci
+kayahan-uygur
+ayse-baykal
+hikmet-cicek
+mert-tascilar
+ugur-can-bicer
+can-ozcelik
+mustafa-onsel
+meclis-kulisi
+sadik-celik
+kaan-arslanoglu
+fehmi-kofteoglu
+#
+# --- OPTIONAL: interpretive but domain-specific (uncomment to widen) ---
+# yusuf-ileri            # tax/legal/economic commentary
+# odabudsman             # media criticism / reader ombudsman
+# pinar-saracoglu        # arts/culture with political framing
+#
+# --- OPTIONAL: political back-catalog NOT in the live index (add explicitly) ---
+# muyesser-yildiz
+# nihat-genc
+# yalcin-kucuk
+# cuneyt-ulsever
+#
+# --- OUT OF SCOPE (do NOT add — genre contamination) ---
+# kamil-erdogdu, can-oktan            # sport
+# salih-seckin-sevinc                 # gastronomy (sits inside /yazarlar!)
+# dr-huseyin-nazlikul-md-phd          # health
+# dr-burcu-bostancioglu               # lifestyle/psychology
+# odapati                             # pets
+# elcin-demiroz, sina-kologlu         # TV/media
+# metin-boran                         # theater
+# kaan-caglayangol, gozde-sula, elif-aktug   # culture/lifestyle/celebrity
