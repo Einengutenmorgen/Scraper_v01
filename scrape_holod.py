@@ -44,8 +44,8 @@ from bs4 import BeautifulSoup
 
 # ============================ CONFIG ============================
 SECTION_URL = "https://holod.media/opinions/"
-WP_BASE = "https://holod.media/wp-json/wp/v2"
-CATEGORY_SLUG = "opinions"
+# NOTE: no WP REST constant. /opinions/ is not a WP category -- it is a
+# material_type META filter -- so categories?slug=opinions returns [].
 
 OUTDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 OUT_JSONL = os.path.join(OUTDIR, "holod_opinions.jsonl")
@@ -57,7 +57,6 @@ REQUEST_DELAY = (1.0, 2.0)
 HTTP_TIMEOUT = 30
 MAX_RETRIES = 4
 BACKOFF_BASE = 2.0
-WP_PER_PAGE = 20
 MAX_PAGES_HARD_CAP = 100
 WORD_FLOOR = 150
 INTERVIEW_DASH_RATIO = 0.25       # >=25% dash-initial paragraphs -> interview
@@ -209,103 +208,112 @@ def _ref_from_url(url: str) -> Optional[Ref]:
                article_id=slug, date=f"{y}-{mo}-{d}")
 
 
-# ---------- discovery via WP REST API (preferred) ----------
-def _wp_category_id(session) -> Optional[int]:
+# ---------- discovery via the theme's load-more ajax handler ----------
+# CONFIRMED LIVE (2026-08). /opinions/ is NOT a WordPress category -- the section
+# is defined by a META field, so `categories?slug=opinions` returns [] and the WP
+# REST path can never work. `/opinions/page/N/` does not exist either. The real
+# loader is the theme's own handler, captured from the minified bundle:
+#
+#   const data = {'action':'load_more_opinions',
+#                 'query': button.attr('data-param-posts'),
+#                 'page': current_page}
+#
+# The button carries the entire WP_Query as a JSON blob (including the
+# material_type meta filter and the language taxonomy term) plus `data-max-pages`.
+# We replay that blob verbatim rather than reconstructing it, so a theme-side
+# change to the query travels with the page instead of silently narrowing the
+# harvest.
+AJAX_URL = "https://holod.media/wp-admin/admin-ajax.php"
+AJAX_ACTION = "load_more_opinions"
+LOAD_MORE_SELECTOR = ".js-load-more-opinions"
+
+
+def _load_more_params(listing_html: str) -> tuple[str, int]:
+    """(query blob, max_pages) read off the load-more button."""
+    soup = BeautifulSoup(listing_html, "html.parser")
+    btn = soup.select_one(LOAD_MORE_SELECTOR)
+    if btn is None:
+        raise ScrapeError(
+            f"No {LOAD_MORE_SELECTOR} button on {SECTION_URL} -- the theme "
+            f"changed. Refusing to return page 1 only.")
+    query = btn.get("data-param-posts")
+    if not query:
+        raise ScrapeError(
+            f"{LOAD_MORE_SELECTOR} has no data-param-posts blob; the ajax "
+            f"handler cannot be called without it.")
     try:
-        r = _get(session, f"{WP_BASE}/categories", params={"slug": CATEGORY_SLUG})
-        data = r.json()
-        if isinstance(data, list) and data and "id" in data[0]:
-            return int(data[0]["id"])
-    except Exception:
-        return None
-    return None
+        max_pages = int(btn.get("data-max-pages") or 0)
+    except ValueError:
+        max_pages = 0
+    if max_pages <= 0:
+        raise ScrapeError(
+            "load-more button has no usable data-max-pages; without it there "
+            "is no exact stop condition.")
+    return query, max_pages
 
 
-def _collect_wp_api(session, target) -> Optional[list[Ref]]:
-    cat = _wp_category_id(session)
-    if not cat:
-        return None
-    refs, seen = [], set()
-    page = 1
-    while len(refs) < target and page <= MAX_PAGES_HARD_CAP:
+def _ajax_page(session, query: str, page: int) -> str:
+    """One load-more fragment. Retries transient 5xx rather than losing the run."""
+    delay, last = 2.0, None
+    for attempt in range(1, 5):
         try:
-            r = _get(session, f"{WP_BASE}/posts",
-                     params={"categories": cat, "per_page": WP_PER_PAGE,
-                             "page": page, "_embed": "1"}, allow_404=True)
-        except ScrapeError:
-            return refs or None
-        if r.status_code == 404:          # WP returns 404 past the last page
-            break
-        posts = r.json()
-        if not isinstance(posts, list) or not posts:
-            break
-        new = 0
-        for p in posts:
-            ref = _ref_from_url(p.get("link", ""))
-            if not ref or ref.article_id in seen:
-                continue
-            seen.add(ref.article_id)
-            # author + interview tag from embedded metadata
-            try:
-                # WP CMS account, not the byline -- kept only as a fallback for
-                # pages whose article__info block is missing. _clean_name drops
-                # placeholders like a bare dash.
-                ref.author = _clean_name(p["_embedded"]["author"][0]["name"])
-            except Exception:
-                pass
-            terms = []
-            try:
-                for grp in p["_embedded"].get("wp:term", []):
-                    terms += [t.get("name", "") for t in grp]
-            except Exception:
-                pass
-            ref.tag_interview = any(t.strip().lower() == "интервью" for t in terms)
-            refs.append(ref)
-            new += 1
-        print(f"[holod] wp-api page {page}: +{new} (total {len(refs)})")
-        if new == 0:
-            break
-        page += 1
-        _sleep()
-    return refs or None
+            r = session.post(
+                AJAX_URL,
+                data={"action": AJAX_ACTION, "query": query, "page": page},
+                headers={**HEADERS, "X-Requested-With": "XMLHttpRequest",
+                         "Referer": SECTION_URL},
+                timeout=30)
+        except requests.RequestException as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        else:
+            if r.status_code < 400:
+                return r.text
+            if r.status_code not in (429, 500, 502, 503, 504):
+                raise ScrapeError(f"HTTP {r.status_code} from {AJAX_ACTION} "
+                                  f"page {page}")
+            last = f"HTTP {r.status_code}"
+        print(f"  [retry {attempt}/3] {last} on ajax page {page}")
+        time.sleep(delay)
+        delay *= 2
+    raise ScrapeError(f"{last} from {AJAX_ACTION} page {page} after 4 attempts")
 
 
-# ---------- discovery via HTML pagination (fallback) ----------
-def _collect_html(session, target) -> list[Ref]:
+def _collect_ajax(session, target) -> list[Ref]:
     refs, seen = [], set()
     r = _get(session, SECTION_URL)
-    cards_first = _parse_cards(r.text)
-    if not cards_first:
-        raise ScrapeError(
-            "No /opinions/ article links on the first listing page — layout "
-            "changed. Refusing to continue.")
-    for ref in cards_first:
+    for ref in _parse_cards(r.text):
         if ref.article_id not in seen:
             seen.add(ref.article_id); refs.append(ref)
-    print(f"[holod] html page 1: {len(refs)} opinion links")
+    if not refs:
+        raise ScrapeError(
+            "No /opinions/ article links on the first listing page -- layout "
+            "changed. Refusing to continue.")
+    query, max_pages = _load_more_params(r.text)
+    print(f"[holod] page 1: {len(refs)} opinion links "
+          f"(button advertises {max_pages} more pages)")
 
-    page = 1
-    while len(refs) < target and page < MAX_PAGES_HARD_CAP:
-        page += 1
-        _sleep()
-        rp = _get(session, urljoin(SECTION_URL, f"page/{page}/"), allow_404=True)
-        if rp.status_code == 404:
-            print(f"[holod] html page {page}: 404 — end of archive "
-                  "(or /page/N/ unsupported; see README).")
+    for page in range(2, max_pages + 1):
+        if len(refs) >= target:
             break
-        cards = _parse_cards(rp.text)
-        new = 0
-        for ref in cards:
-            if ref.article_id not in seen:
-                seen.add(ref.article_id); refs.append(ref); new += 1
-        print(f"[holod] html page {page}: +{new} (total {len(refs)})")
-        if new == 0:
-            if page == 2:
+        _sleep()
+        frag = _ajax_page(session, query, page)
+        if not frag.strip() or frag.strip() in ("0", "-1"):
+            print(f"[holod] ajax page {page}: empty fragment -- section exhausted")
+            break
+        cards = _parse_cards(frag)
+        new = [c for c in cards if c.article_id not in seen]
+        for c in new:
+            seen.add(c.article_id); refs.append(c)
+        print(f"[holod] ajax page {page}/{max_pages}: +{len(new)} (total {len(refs)})")
+        if not new:
+            # The button advertises more pages but nothing new came back. That is
+            # an anomaly, not a clean end -- say so instead of stopping quietly.
+            if cards:
                 raise ScrapeError(
-                    "HTML /opinions/page/2/ returned no NEW opinion links while a "
-                    "'Посмотреть больше' button exists on page 1. The load-more is "
-                    "likely admin-ajax.php, not /page/N/. Enable the WP REST API "
-                    "path or a Playwright fallback — refusing to return page 1 only.")
+                    f"ajax page {page} returned {len(cards)} link(s), all already "
+                    f"seen, while data-max-pages says {max_pages}. Pagination is "
+                    f"not advancing -- refusing to report a partial harvest as "
+                    f"complete.")
             break
     return refs
 
@@ -335,12 +343,8 @@ def _parse_cards(html: str) -> list[Ref]:
 
 def collect(target_articles: int) -> tuple[list[Ref], dict]:
     session = _session()
-    method = "wp_api"
-    refs = _collect_wp_api(session, target_articles)
-    if not refs:
-        method = "html"
-        print("[holod] WP REST API unavailable/empty — falling back to HTML.")
-        refs = _collect_html(session, target_articles)
+    method = "ajax_load_more"
+    refs = _collect_ajax(session, target_articles)
 
     exhausted = len(refs) < target_articles
     meta = {"method": method, "exhausted_early": exhausted,
