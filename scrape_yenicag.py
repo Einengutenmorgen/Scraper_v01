@@ -52,10 +52,12 @@ import os
 import re
 import statistics
 import sys
+import time
 import unicodedata
 from datetime import date, datetime
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import requests
 import trafilatura
 from lxml import html as lxml_html
 
@@ -432,16 +434,39 @@ def save_raw_html(article_id, html_text, raw_dir):
     return path
 
 
+# Transient server / rate-limit responses. A 5xx or a 429 mid-harvest is the
+# site having a bad second, NOT a reason to discard hours of collection --
+# retry with backoff and only fail loud once the site is genuinely unavailable.
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRIES = 5
+
 def _http_get(url, session, allow_404=False):
     assert_same_domain(url)
-    resp = session.get(url, headers=HEADERS, timeout=30)
-    # On the listing pagination, BilginPro returns 404 for the page past the
-    # last one (confirmed live) — that is the clean end signal, NOT an anomaly.
-    if resp.status_code == 404 and allow_404:
-        return None
-    if resp.status_code >= 400:
-        raise ScrapeError(f"HTTP {resp.status_code} for {url}")
-    return resp.text
+    delay, last = 2.0, None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=30)
+        except requests.RequestException as exc:      # dropped connection, DNS, TLS
+            last = f"{type(exc).__name__}: {exc}"
+            resp = None
+        if resp is not None:
+            # On the listing pagination, BilginPro returns 404 for the page past
+            # the last one (confirmed live) -- clean end signal, NOT an anomaly.
+            if resp.status_code == 404 and allow_404:
+                return None
+            if resp.status_code < 400:
+                return resp.text
+            if resp.status_code not in RETRYABLE_STATUS:
+                raise ScrapeError(f"HTTP {resp.status_code} for {url}")
+            last = f"HTTP {resp.status_code}"
+        if attempt < MAX_RETRIES:
+            print(f"  [retry {attempt}/{MAX_RETRIES - 1}] {last} for {url} "
+                  f"-- waiting {delay:.0f}s")
+            time.sleep(delay)
+            delay *= 2
+    raise ScrapeError(
+        f"{last} for {url} after {MAX_RETRIES} attempts -- the site is not "
+        f"just having a bad second")
 
 
 def collect_author(author, limit, session):
@@ -561,10 +586,41 @@ LIVE_NOTES = [
 ]
 
 
+class _IncrementalWriter:
+    """Append each record to the JSONL as it is built, not at the end of the run.
+
+    The scrapers used to hold every record in memory and write once the harvest
+    finished. A crash, a KeyboardInterrupt or an unretryable HTTP error therefore
+    threw away the whole run even though every page had already been fetched and
+    saved to the raw store. Appending as we go means an interrupted run leaves a
+    usable partial corpus, and `reextract.py` can rebuild the rest from raw HTML.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.fh = open(path, "w", encoding="utf-8")
+        self.n = 0
+
+    def write(self, rec):
+        self.fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        self.n += 1
+        if self.n % 200 == 0:        # survive a hard kill, not just an exception
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+
+    def close(self):
+        if not self.fh.closed:
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+            self.fh.close()
+
+
 def run(authors, limit, out_path, raw_dir, include_konuk=False):
     import requests
     session = requests.Session()
     records, ended, skipped = [], {}, []
+    writer = _IncrementalWriter(out_path)   # records land on disk as they arrive
     seen_global = set()   # dedup by article_id across authors + konuk-kalem
     tasks = [("author", a) for a in authors]
     if include_konuk:
@@ -582,14 +638,18 @@ def run(authors, limit, out_path, raw_dir, include_konuk=False):
             try:
                 html_text = _http_get(url, session)
                 save_raw_html(aid, html_text, raw_dir)
-                records.append(build_record(url, aid,
-                                            extract_article(html_text, url)))
+                rec = build_record(url, aid, extract_article(html_text, url))
+                records.append(rec)
+                writer.write(rec)
             except ScrapeError as exc:
                 # e.g. "Empty body after extraction" on a video/stub post — record
                 # and skip rather than aborting the whole harvest.
                 skipped.append({"id": aid, "url": url, "reason": str(exc)[:200]})
                 print(f"[skip] {aid}: {exc}", file=sys.stderr)
 
+    writer.close()
+    # Rewrite in one pass so the finished file is clean and ordered; the
+    # incremental copy has already protected against a mid-run crash.
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         for rec in records:

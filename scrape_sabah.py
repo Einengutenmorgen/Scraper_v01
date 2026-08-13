@@ -717,10 +717,41 @@ def discover_authors(session, categories):
     return slugs
 
 
+class _IncrementalWriter:
+    """Append each record to the JSONL as it is built, not at the end of the run.
+
+    The scrapers used to hold every record in memory and write once the harvest
+    finished. A crash, a KeyboardInterrupt or an unretryable HTTP error therefore
+    threw away the whole run even though every page had already been fetched and
+    saved to the raw store. Appending as we go means an interrupted run leaves a
+    usable partial corpus, and `reextract.py` can rebuild the rest from raw HTML.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.fh = open(path, "w", encoding="utf-8")
+        self.n = 0
+
+    def write(self, rec):
+        self.fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        self.n += 1
+        if self.n % 200 == 0:        # survive a hard kill, not just an exception
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+
+    def close(self):
+        if not self.fh.closed:
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+            self.fh.close()
+
+
 def run(authors, limit, out_path, raw_dir):
     import requests
     session = requests.Session()
     records, ended, skipped = [], {}, []
+    writer = _IncrementalWriter(out_path)   # records land on disk as they arrive
     seen_global = set()   # dedup by uid across all authors (shared rails)
     for author in authors:
         try:
@@ -742,13 +773,18 @@ def run(authors, limit, out_path, raw_dir):
                 html_text = fetch(url, session)
                 save_raw_html(uid, html_text, raw_dir)
                 extracted = extract_article(html_text, url, d, slug)
-                records.append(build_record(url, slug, uid, extracted))
+                rec = build_record(url, slug, uid, extracted)
+                records.append(rec)
+                writer.write(rec)
             except ScrapeError as exc:
                 # Per-article failure (e.g. HTTP 405, empty body) is RECORDED and
                 # skipped so one article can't abort a multi-thousand harvest.
                 skipped.append({"id": uid, "url": url, "reason": str(exc)[:200]})
                 print(f"[skip] {uid}: {exc}", file=sys.stderr)
 
+    writer.close()
+    # Rewrite in one pass so the finished file is clean and ordered; the
+    # incremental copy has already protected against a mid-run crash.
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         for rec in records:

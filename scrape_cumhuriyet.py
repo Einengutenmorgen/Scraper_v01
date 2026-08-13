@@ -52,6 +52,7 @@ import os
 import re
 import statistics
 import sys
+import time
 from datetime import datetime, date
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -575,7 +576,41 @@ def _encode_url(url: str) -> str:
                        p.query, p.fragment))
 
 
+# Transient server / rate-limit responses. A 5xx or a 429 mid-harvest is the
+# site having a bad second, NOT a reason to discard hours of collection --
+# retry with backoff and only fail loud once the site is genuinely unavailable.
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRIES = 5
+
 def _http_get(url: str, session, referer: str = None) -> str:
+    """Fetch with backoff on transient server / rate-limit responses.
+
+    A 5xx or 429 partway through a multi-hour harvest is the site having a bad
+    second. Failing loud there discards everything collected so far, which is
+    how earlier full runs were lost. Retry first; fail loud only when the site
+    is genuinely unavailable.
+    """
+    delay, last = 2.0, None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return _http_get_once(url, session, referer)
+        except ScrapeError as exc:
+            msg = str(exc)
+            code = next((c for c in RETRYABLE_STATUS if f"HTTP {c} " in msg), None)
+            if code is None:
+                raise
+            last = f"HTTP {code}"
+        if attempt < MAX_RETRIES:
+            print(f"  [retry {attempt}/{MAX_RETRIES - 1}] {last} for {url} "
+                  f"-- waiting {delay:.0f}s")
+            time.sleep(delay)
+            delay *= 2
+    raise ScrapeError(
+        f"{last} for {url} after {MAX_RETRIES} attempts -- the site is not "
+        f"just having a bad second")
+
+
+def _http_get_once(url: str, session, referer: str = None) -> str:
     headers = dict(HEADERS)
     if referer:
         headers["Referer"] = referer
@@ -841,6 +876,36 @@ def collect_via_sitemap(session, limit, exclude_authors=(),
     return parse_sitemap_urls(xml, exclude_authors)[:limit]
 
 
+class _IncrementalWriter:
+    """Append each record to the JSONL as it is built, not at the end of the run.
+
+    The scrapers used to hold every record in memory and write once the harvest
+    finished. A crash, a KeyboardInterrupt or an unretryable HTTP error therefore
+    threw away the whole run even though every page had already been fetched and
+    saved to the raw store. Appending as we go means an interrupted run leaves a
+    usable partial corpus, and `reextract.py` can rebuild the rest from raw HTML.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.fh = open(path, "w", encoding="utf-8")
+        self.n = 0
+
+    def write(self, rec):
+        self.fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        self.n += 1
+        if self.n % 200 == 0:        # survive a hard kill, not just an exception
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+
+    def close(self):
+        if not self.fh.closed:
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+            self.fh.close()
+
+
 def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
         discover=False, use_sitemap=False):
     import requests
@@ -852,6 +917,7 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
     except Exception:
         pass
     records, ended, skipped = [], {}, []
+    writer = _IncrementalWriter(out_path)   # records land on disk as they arrive
     seen_global = set()   # dedup by article_id across all authors/streams
 
     def _fetch_one(url, aid, referer=None):
@@ -864,7 +930,9 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
         try:
             html_text = _http_get(url, session, referer=referer)
             save_raw_html(aid, html_text, raw_dir)
-            records.append(build_record(url, aid, extract_article(html_text, url)))
+            rec = build_record(url, aid, extract_article(html_text, url))
+            records.append(rec)
+            writer.write(rec)
         except ScrapeError as exc:
             skipped.append({"id": aid, "url": url, "reason": str(exc)[:200]})
             print(f"[skip] {aid}: {exc}", file=sys.stderr)
@@ -894,6 +962,9 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
             for url, aid in pairs:
                 _fetch_one(url, aid, referer=author_url)
 
+    writer.close()
+    # Rewrite in one pass so the finished file is clean and ordered; the
+    # incremental copy has already protected against a mid-run crash.
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         for rec in records:
