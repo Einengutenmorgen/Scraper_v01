@@ -53,10 +53,10 @@ def setup(tmp):
     write(os.path.join(tmp, "output", "holod_opinions.jsonl"),
           [rec("holod", "slug-a", suspected_interview=True),
            rec("holod", "slug-b", suspected_interview=False)])
-    # TR family: extra `uid`, different path convention
+    # TR family: extra `uid`, same output/ root
     tr = rec("cumhuriyet", "2510001", section="yazarlar")
     tr["uid"] = "2026-01-15__slug"
-    write(os.path.join(tmp, "out", "cumhuriyet.jsonl"), [tr])
+    write(os.path.join(tmp, "output", "cumhuriyet.jsonl"), [tr])
     return tmp
 
 

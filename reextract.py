@@ -42,6 +42,30 @@ from dataclasses import asdict as dc_asdict
 
 from bs4 import BeautifulSoup
 
+# --------------------------------------------------------------------------
+# where output lives
+# --------------------------------------------------------------------------
+# ONE root for both scraper families: $KUKI_ROOT if set, else the directory
+# holding these scripts -- deliberately NOT the cwd. The TR scrapers used to
+# resolve `output/` against wherever the shell happened to be, so running one
+# from another directory put its JSONL where nothing else looked for it.
+#
+#   <ROOT>/output/<name>.jsonl          RU records
+#   <ROOT>/output/raw_html/<source>/    RU raw pages
+#   <ROOT>/output/<source>.jsonl        TR records
+#   <ROOT>/output/raw_store/<source>/   TR raw pages
+REPO_ROOT = os.environ.get("KUKI_ROOT") or os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(REPO_ROOT, "output")
+
+
+def default_raw_root() -> str:
+    return os.path.join(OUTPUT_DIR, "raw_store")
+
+
+def default_out(source: str) -> str:
+    return os.path.join(OUTPUT_DIR, f"{source}.jsonl")
+
+
 BANNED = {"orientation", "factuality_tier", "genre"}   # outlet-level; see SOURCES.md
 
 
@@ -162,29 +186,44 @@ class Holod(_RU):
 
 
 class _TR:
-    """Dict records, CLI-driven paths. Raw store is <raw_dir>/<SOURCE>/."""
+    """Dict records. Raw store is <raw_dir>/<SOURCE>/.
+
+    RECOVERY: the TR scrapers write raw HTML per article AS IT IS FETCHED, but
+    the JSONL only when a run FINISHES. A crash therefore strands real,
+    already-paid-for pages with no JSONL row. Those are recovered here by
+    reading the url out of the page's own canonical/og:url, so a crashed run
+    costs re-extraction, never a re-fetch.
+    """
     module_name: str
 
     def __init__(self, out=None, raw_dir=None):
         self.M = __import__(self.module_name)
-        self._out = out or f"out/{self.M.SOURCE}.jsonl"
-        self._raw = os.path.join(raw_dir or "raw_store", self.M.SOURCE)
+        self._out = out or default_out(self.M.SOURCE)
+        self._raw = os.path.join(raw_dir or default_raw_root(), self.M.SOURCE)
 
     def paths(self):
         return self._out, self._raw
 
-    def _need_prior(self, stem, prior):
-        if not prior:
+    def _url(self, stem, html, prior):
+        """(url, recovered_from_html). The JSONL row wins when it exists."""
+        if prior and prior.get("url"):
+            return prior["url"], False
+        url = _canonical_url(html)
+        if not url:
             raise RuntimeError(
-                f"{stem}: no matching JSONL record. The TR extractors need the "
-                f"article url (and for Sabah the url date) — keep the JSONL "
-                f"next to the raw store")
-        return prior
+                f"{stem}: no JSONL row and no canonical/og:url in the saved page"
+                f" -- cannot recover the article url")
+        if self.M.scope_link(url) is None:
+            raise RuntimeError(f"{stem}: recovered url out of scope ({url})")
+        return url, True
 
     def rebuild(self, stem, html, prior):
-        p = self._need_prior(stem, prior)
-        extracted = self.M.extract_article(html, p["url"])
-        return self.M.build_record(p["url"], p["article_id"], extracted)
+        url, recovered = self._url(stem, html, prior)
+        aid = prior["article_id"] if prior else self.M.scope_link(url)
+        rec = self.M.build_record(url, aid, self.M.extract_article(html, url))
+        if recovered:
+            rec["_recovered_from_raw"] = True
+        return rec
 
 
 class Cumhuriyet(_TR):
@@ -203,14 +242,24 @@ class Sabah(_TR):
     name, module_name = "sabah", "scrape_sabah"
 
     def rebuild(self, stem, html, prior):
-        # Raw files are keyed by uid ("YYYY-MM-DD__slug"); extract_article
-        # cross-checks the url date against the page meta and fails loud on
-        # mismatch, so the prior date must be passed through unchanged.
-        p = self._need_prior(stem, prior)
-        slug = p["url"].rstrip("/").rsplit("/", 1)[-1]
-        extracted = self.M.extract_article(html, p["url"], p["date"], slug)
-        return self.M.build_record(p["url"], p["article_id"],
-                                   p.get("uid", stem), extracted)
+        # Raw files are keyed by uid ("YYYY-MM-DD__slug"). scope_link derives
+        # (slug, date_iso, uid) from the url path alone, so a crashed Sabah run
+        # is fully recoverable. extract_article then cross-checks that date
+        # against the page meta and fails loud on mismatch.
+        url, recovered = self._url(stem, html, prior)
+        scoped = self.M.scope_link(url)
+        if scoped is None:
+            raise RuntimeError(f"{stem}: {url} is not an in-scope Sabah column")
+        slug, date_iso, uid = scoped
+        if prior:
+            date_iso = prior.get("date", date_iso)
+            uid = prior.get("uid", uid)
+        rec = self.M.build_record(
+            url, prior["article_id"] if prior else slug, uid,
+            self.M.extract_article(html, url, date_iso, slug))
+        if recovered:
+            rec["_recovered_from_raw"] = True
+        return rec
 
 
 ADAPTERS = {a.name: a for a in
@@ -245,9 +294,15 @@ def reextract(source, dry_run=False, allow_failures=False, out=None, raw_dir=Non
         stem = fn[:-5]
         html = open(os.path.join(raw_html_dir, fn), encoding="utf-8").read()
         p = prior.get(stem)
-        if p is None:                      # raw filename need not equal article_id
+        if p is None:
+            # A raw filename need not equal article_id: NG prefixes the date
+            # ("<YYYY-MM-DD>_<id>.html") and Sabah keys by uid. Match every form,
+            # or the file reports as <new> and the diff says nothing.
+            tail = stem.split("_", 1)[1] if "_" in stem else None
             p = next((r for r in prior.values()
-                      if r["article_id"] == stem or r.get("uid") == stem), None)
+                      if r["article_id"] == stem
+                      or r.get("uid") == stem
+                      or (tail and r["article_id"] == tail)), None)
         try:
             rec = ad.rebuild(stem, html, p)
         except Exception as exc:
@@ -302,7 +357,9 @@ def main():
     ap.add_argument("--allow-failures", action="store_true",
                     help="write the records that succeeded even if some failed")
     ap.add_argument("--out", help="TR only: override the JSONL path")
-    ap.add_argument("--raw-dir", default="raw_store", help="TR only: raw store root")
+    ap.add_argument("--raw-dir", default=None,
+                    help="TR only: raw store root "
+                         f"(default: {default_raw_root()})")
     args = ap.parse_args()
 
     results = []

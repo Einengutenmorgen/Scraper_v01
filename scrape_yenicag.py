@@ -62,6 +62,15 @@ from lxml import html as lxml_html
 # ----------------------------------------------------------------------------
 SOURCE = "yenicag"
 SECTION = "yazarlar"
+
+# Output root: $KUKI_ROOT if set, else THIS SCRIPT's directory -- deliberately
+# not the cwd. `output/` used to resolve against the shell's working directory,
+# so running the scraper from elsewhere scattered the corpus across two trees
+# and left reextract/merge looking in the wrong place.
+_ROOT = os.environ.get("KUKI_ROOT") or os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(_ROOT, "output")
+DEFAULT_OUT = os.path.join(OUTPUT_DIR, f"{SOURCE}.jsonl")
+DEFAULT_RAW_DIR = os.path.join(OUTPUT_DIR, "raw_store")
 # Collection provenance. Outlet-level judgements (orientation,
 # factuality_tier) and expected genre are properties of the OUTLET, not of
 # the text -- they live in sources.csv and are joined on `source` at analysis
@@ -602,8 +611,8 @@ def main(argv=None):
                     help="comma-separated slugs OR a path to a file")
     ap.add_argument("--konuk-kalem", action="store_true",
                     help="also harvest the /konuk-kalem guest-opinion stream")
-    ap.add_argument("--out", default="output/yenicag.jsonl")
-    ap.add_argument("--raw-dir", default="output/raw_store")
+    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--raw-dir", default=DEFAULT_RAW_DIR)
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000

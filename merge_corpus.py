@@ -38,7 +38,7 @@ import statistics
 import sys
 from collections import Counter, defaultdict
 
-from reextract import ADAPTERS, BANNED, _TR
+from reextract import ADAPTERS, BANNED
 
 REGISTRY = "sources.csv"
 
@@ -69,19 +69,15 @@ def load_registry(path=REGISTRY) -> dict:
 def source_paths(root: str | None = None) -> dict:
     """{adapter_name: jsonl_path} — single source of truth, from reextract.
 
-    The two families disagree on where output lives: the RU scrapers pin
-    `output/` to the SCRIPT's directory (absolute, set at import), while the TR
-    scrapers write to a cwd-relative `out/`. Running a scraper from a different
-    directory therefore puts its JSONL somewhere the other convention would not
-    look. `--root` rebases both onto one tree, which is also what makes this
-    testable.
+    Both families write under a single <ROOT>/output/ tree anchored to the
+    scripts' directory (or $KUKI_ROOT), never the cwd. `--root` rebases onto
+    another tree, which is also what makes this testable.
     """
     paths = {}
     for name, cls in ADAPTERS.items():
         p = cls().paths()[0]
         if root:
-            subdir = "out" if issubclass(cls, _TR) else "output"
-            p = os.path.join(root, subdir, os.path.basename(p))
+            p = os.path.join(root, "output", os.path.basename(p))
         paths[name] = p
     return paths
 
@@ -200,8 +196,7 @@ def main():
                     help="default: inferred from --out")
     ap.add_argument("--sources", help="comma-separated subset (default: all found)")
     ap.add_argument("--registry", default=REGISTRY)
-    ap.add_argument("--root", help="rebase all source paths under this tree "
-                                   "(<root>/output/... for RU, <root>/out/... for TR)")
+    ap.add_argument("--root", help="rebase all source paths under <root>/output/")
     ap.add_argument("--with-source-meta", action="store_true",
                     help="add orientation / factuality_tier / expected_genre "
                          "(analysis view — do NOT feed this to the filter)")
