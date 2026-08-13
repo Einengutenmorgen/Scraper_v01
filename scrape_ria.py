@@ -135,13 +135,13 @@ BASE_HEADERS = {
 MORE_ENDPOINT = "https://ria.ru/services/ria-novosti-analitika/more.html"
 MORE_VIEW = "supertag"
 
-# Fixed provenance / axis tags for THIS source. Constant on every record.
+# Collection provenance for THIS source. Constant on every record.
+# NOTE: outlet-level judgements (orientation, factuality_tier, expected genre)
+# are NOT stored per article -- they are properties of the OUTLET, not the text.
+# They live in sources.csv and are joined on `source` at analysis time.
 PROVENANCE = {
     "source": "ria_novosti",
     "section": "analitika",
-    "orientation": "state_aligned",
-    "factuality_tier": "disinfo_prone",   # anchors mainstream / disinfo-prone quadrant
-    "genre": "analysis_essay",
 }
 
 INSTITUTIONAL_BYLINE = "РИА Новости"
@@ -601,12 +601,9 @@ class ArticleRecord:
     mean_paragraph_len: float
     sentence_count: int
     has_byline: bool
-    # PROVENANCE / AXIS TAGS
+    # COLLECTION PROVENANCE (join key to sources.csv)
     source: str = PROVENANCE["source"]
     section: str = PROVENANCE["section"]
-    orientation: str = PROVENANCE["orientation"]
-    factuality_tier: str = PROVENANCE["factuality_tier"]
-    genre: str = PROVENANCE["genre"]
 
 
 def _iso_date_from_url_date(d: str) -> str:

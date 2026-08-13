@@ -65,10 +65,12 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 HEADERS = {"User-Agent": USER_AGENT,
            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
 
-# Fixed provenance for THIS source.
-FIXED = {"source": "ng", "section": "vision",
-         "orientation": "state_sympathetic_centrist",
-         "factuality_tier": "mixed", "genre": "opinion_essay"}
+# Collection provenance only. Outlet-level judgements (orientation,
+# factuality_tier) are properties of the OUTLET, not of the text: they live
+# in sources.csv and are joined on `source` at analysis time.
+FIXED = {"source": "ng", "section": "vision"}
+# NOTE: no `genre` field -- genre is what the genre/stance filter decides;
+# asserting it here would pre-judge that gate.
 
 # /vision/YYYY-MM-DD/<slug>.html  — the ONLY link shape we harvest.
 ARTICLE_RE = re.compile(r"/vision/(\d{4}-\d{2}-\d{2})/([^/\"'#?<>\s]+)\.html")
@@ -273,9 +275,6 @@ class Record:
     date: str
     source: str
     section: str
-    orientation: str
-    factuality_tier: str
-    genre: str
     title: str
     subtitle: Optional[str]
     body: str

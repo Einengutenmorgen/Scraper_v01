@@ -3,7 +3,7 @@
 """Local verification of extraction + signal logic against a synthetic RIA-shaped
 article. ria.ru is not reachable from the build sandbox, so this proves the
 extraction PLUMBING (body pruning, byline, signals) on controlled HTML."""
-import v1_ria_analitika_scraper as R
+import scrape_ria as R
 
 ESSAY_PARAS = [
     "Похоже, что нынешняя война на Ближнем Востоке становится точкой слома "
@@ -90,8 +90,7 @@ def run_case(signed: bool):
     print("mean_par_len:", rec.mean_paragraph_len)
     print("sentences   :", rec.sentence_count)
     print("content[:60]:", repr(rec.content[:60]))
-    print("provenance  :", rec.source, rec.section, rec.orientation,
-          rec.factuality_tier, rec.genre)
+    print("provenance  :", rec.source, rec.section)
 
     # Assertions: junk pruned, essay kept.
     body = rec.body
@@ -111,9 +110,12 @@ def run_case(signed: bool):
     else:
         assert not rec.has_byline and rec.byline == "РИА Новости"
     # axis tags fixed
-    assert (rec.source, rec.section, rec.orientation, rec.factuality_tier,
-            rec.genre) == ("ria_novosti", "analitika", "state_aligned",
-                           "disinfo_prone", "analysis_essay")
+    assert (rec.source, rec.section) == ("ria_novosti", "analitika")
+    # Outlet-level judgements must NOT be stored per record (they belong in
+    # sources.csv). Fail loud if any of them creeps back into the schema.
+    for banned in ("orientation", "factuality_tier", "genre"):
+        assert not hasattr(rec, banned), (
+            f"{banned!r} is an OUTLET-level field and must not be on a record")
     print("  PASSED")
 
 

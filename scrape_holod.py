@@ -68,9 +68,12 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 HEADERS = {"User-Agent": USER_AGENT,
            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
 
-FIXED = {"source": "holod", "section": "opinions",
-         "orientation": "opposition_exile", "factuality_tier": "high_factuality"}
-# genre is per-article: "interview" or "opinion_essay".
+# Collection provenance only. Outlet-level judgements (orientation,
+# factuality_tier) live in sources.csv, joined on `source` at analysis time.
+FIXED = {"source": "holod", "section": "opinions"}
+# NOTE: no `genre` field. Genre is what the genre/stance filter decides;
+# assigning it here would pre-judge that gate. The raw structural signal
+# (`suspected_interview`) is kept instead.
 
 # holod.media/YYYY/MM/DD/<slug>/ ; /longrids/ is excluded explicitly.
 ARTICLE_RE = re.compile(
@@ -349,9 +352,6 @@ class Record:
     date: str
     source: str
     section: str
-    orientation: str
-    factuality_tier: str
-    genre: str
     title: str
     subtitle: Optional[str]
     body: str
@@ -478,11 +478,10 @@ def extract_record(ref: Ref, html: str) -> Record:
     interview = bool(ref.tag_interview or _page_interview_tag(html) or kw
                      or _qa_ratio(body) >= 0.33
                      or _dash_ratio(body) >= INTERVIEW_DASH_RATIO)
-    genre = "interview" if interview else "opinion_essay"
     content = f"{title}\n\n{body}" if title else body
     return Record(
         url=ref.url, article_id=ref.article_id, date=ref.date, **FIXED,
-        genre=genre, title=title, subtitle=subtitle or None, body=body,
+        title=title, subtitle=subtitle or None, body=body,
         content=content, author=author or None, has_byline=bool(author),
         suspected_interview=interview, stated_reading_time=reading, **sig)
 

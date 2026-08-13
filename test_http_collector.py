@@ -4,7 +4,7 @@
 fixture that mimics RIA's more.html fragment endpoint (cursor = last id)."""
 import http.server, socketserver, threading
 from urllib.parse import urlparse, parse_qs
-import v1_ria_analitika_scraper as R
+import scrape_ria as R
 
 ALL_IDS = list(range(2050000000, 2050000000 - 23, -1))  # 23 articles
 PAGE = 5

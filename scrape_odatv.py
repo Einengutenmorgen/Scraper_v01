@@ -6,12 +6,12 @@ scrape_odatv.py — KuKi corpus per-source scraper for Oda TV columnists.
 Standalone module. CMS is BilginPro (same structural template as Yeniçağ) but
 this is a SEPARATE independent file by convention — NO shared code.
 
-Fixed axis tags
+Collection provenance (the only outlet fields stored per record)
     source            = odatv
     section           = yazarlar
-    orientation       = nationalist_alternative
-    factuality_tier   = disinfo_prone
-    genre             = opinion_column
+Outlet-level judgements (orientation, factuality_tier, expected genre) are
+properties of the OUTLET, not of the text: they live in sources.csv and are
+joined on `source` at analysis time.
 
 Collection
     Author list: https://www.odatv.com/yazarlar/{author-slug}?sayfa=N
@@ -60,9 +60,11 @@ from lxml import html as lxml_html
 # ----------------------------------------------------------------------------
 SOURCE = "odatv"
 SECTION = "yazarlar"
-ORIENTATION = "nationalist_alternative"
-FACTUALITY_TIER = "disinfo_prone"
-GENRE = "opinion_column"
+# Collection provenance. Outlet-level judgements (orientation,
+# factuality_tier) and expected genre are properties of the OUTLET, not of
+# the text -- they live in sources.csv and are joined on `source` at analysis
+# time. Genre in particular is what the genre/stance filter decides; asserting
+# it on every record would pre-judge that gate.
 
 BASE = "https://www.odatv.com"
 ALLOWED_HOST = "www.odatv.com"
@@ -385,8 +387,8 @@ def build_record(url, article_id, extracted):
     title, body = extracted["title"], extracted["body"]
     rec = {
         "url": url, "article_id": article_id, "date": extracted["date"],
-        "source": SOURCE, "section": SECTION, "orientation": ORIENTATION,
-        "factuality_tier": FACTUALITY_TIER, "genre": GENRE, "title": title,
+        "source": SOURCE, "section": SECTION,
+        "title": title,
         "subtitle": extracted.get("subtitle", ""), "body": body,
         "content": title + "\n\n" + body,
         "author": extracted.get("author", ""),

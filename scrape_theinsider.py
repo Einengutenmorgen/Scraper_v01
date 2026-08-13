@@ -65,9 +65,12 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 HEADERS = {"User-Agent": USER_AGENT,
            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
 
-FIXED = {"source": "theinsider", "section": "opinions",
-         "orientation": "opposition_exile", "factuality_tier": "high_factuality",
-         "genre": "opinion_essay"}
+# Collection provenance only. Outlet-level judgements (orientation,
+# factuality_tier) are properties of the OUTLET, not of the text: they live
+# in sources.csv and are joined on `source` at analysis time.
+FIXED = {"source": "theinsider", "section": "opinions"}
+# NOTE: no `genre` field -- genre is what the genre/stance filter decides;
+# asserting it here would pre-judge that gate.
 
 # /opinions/<author-slug>/<numeric-id>. Trailing \b so it also matches ids that
 # appear inside JSON (…/id") as well as in href paths (…/id or …/id/).
@@ -366,9 +369,6 @@ class Record:
     date: Optional[str]
     source: str
     section: str
-    orientation: str
-    factuality_tier: str
-    genre: str
     title: str
     subtitle: Optional[str]
     body: str

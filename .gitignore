@@ -6,3 +6,8 @@ venvRia/
 *.log
 *.csv
 *.jsonl
+__pycache__/
+*.pyc
+
+# config, not data -- must be tracked despite *.csv above
+!sources.csv

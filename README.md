@@ -20,16 +20,16 @@ python -m playwright install chromium      # only needed for METHOD="browser"
 
 ```bash
 # collect 40 EXTRA articles beyond the initial page (operator's "i"), default method
-python ria_analitika_scraper.py 40
+python scrape_ria.py 40
 
 # force the direct-HTTP load-more path instead of the browser
-python ria_analitika_scraper.py 40 --method http
+python scrape_ria.py 40 --method http
 ```
 
 Or from Python:
 
 ```python
-from ria_analitika_scraper import run
+from scrape_ria import run
 run(extra_articles=40, method="browser")
 ```
 

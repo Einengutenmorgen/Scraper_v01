@@ -6,12 +6,12 @@ scrape_sabah.py — KuKi corpus per-source scraper for Sabah columnists.
 Standalone module. NO shared abstraction with the other TR scrapers
 (duplication is deliberate; matches the RU convention).
 
-Fixed axis tags
+Collection provenance (the only outlet fields stored per record)
     source            = sabah
     section           = yazarlar
-    orientation       = state_aligned
-    factuality_tier   = mixed
-    genre             = opinion_column
+Outlet-level judgements (orientation, factuality_tier, expected genre) are
+properties of the OUTLET, not of the text: they live in sources.csv and are
+joined on `source` at analysis time.
     (State-aligned mainstream counterpart to ria.ru.)
 
 Collection
@@ -68,9 +68,11 @@ from lxml import html as lxml_html
 # ----------------------------------------------------------------------------
 SOURCE = "sabah"
 SECTION = "yazarlar"
-ORIENTATION = "state_aligned"
-FACTUALITY_TIER = "mixed"
-GENRE = "opinion_column"
+# Collection provenance. Outlet-level judgements (orientation,
+# factuality_tier) and expected genre are properties of the OUTLET, not of
+# the text -- they live in sources.csv and are joined on `source` at analysis
+# time. Genre in particular is what the genre/stance filter decides; asserting
+# it on every record would pre-judge that gate.
 
 BASE = "https://www.sabah.com.tr"
 ALLOWED_HOST = "www.sabah.com.tr"
@@ -510,9 +512,6 @@ def build_record(url, article_id, uid, extracted):
         "date": extracted["date"],
         "source": SOURCE,
         "section": SECTION,
-        "orientation": ORIENTATION,
-        "factuality_tier": FACTUALITY_TIER,
-        "genre": GENRE,
         "title": title,
         "subtitle": extracted.get("subtitle", ""),
         "body": body,

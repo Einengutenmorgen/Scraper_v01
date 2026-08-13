@@ -1,0 +1,9 @@
+source,country,lang,orientation,factuality_tier,expected_genre
+ria_novosti,RU,ru,state_aligned,,analysis_essay
+ng,RU,ru,state_sympathetic_centrist,,opinion_essay
+theinsider,RU,ru,opposition_exile,,opinion_essay
+holod,RU,ru,opposition_exile,,opinion_essay
+cumhuriyet,TR,tr,secular_kemalist_opposition,,opinion_column
+sabah,TR,tr,state_aligned,,opinion_column
+yenicag,TR,tr,ultranationalist_opposition,,opinion_column
+odatv,TR,tr,nationalist_alternative,,opinion_column

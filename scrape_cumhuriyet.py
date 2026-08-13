@@ -7,12 +7,12 @@ Standalone module. NO shared abstraction with the other TR scrapers
 (scrape_sabah / scrape_yenicag / scrape_odatv) — duplication is deliberate and
 matches the RU convention (scrape_theinsider / scrape_ng_vision / scrape_holod).
 
-Fixed axis tags for this source
+Collection provenance (the only outlet fields stored per record)
     source            = cumhuriyet
     section           = yazarlar
-    orientation       = secular_kemalist_opposition
-    factuality_tier   = high_factuality
-    genre             = opinion_column
+Outlet-level judgements (orientation, factuality_tier, expected genre) are
+properties of the OUTLET, not of the text: they live in sources.csv and are
+joined on `source` at analysis time.
 
 Collection
     Author list:  https://www.cumhuriyet.com.tr/yazarlar/{author-slug}
@@ -63,9 +63,11 @@ from lxml import html as lxml_html
 # ----------------------------------------------------------------------------
 SOURCE = "cumhuriyet"
 SECTION = "yazarlar"
-ORIENTATION = "secular_kemalist_opposition"
-FACTUALITY_TIER = "high_factuality"
-GENRE = "opinion_column"
+# Collection provenance. Outlet-level judgements (orientation,
+# factuality_tier) and expected genre are properties of the OUTLET, not of
+# the text -- they live in sources.csv and are joined on `source` at analysis
+# time. Genre in particular is what the genre/stance filter decides; asserting
+# it on every record would pre-judge that gate.
 
 BASE = "https://www.cumhuriyet.com.tr"
 ALLOWED_HOST = "www.cumhuriyet.com.tr"
@@ -528,9 +530,6 @@ def build_record(url: str, article_id: str, extracted: dict) -> dict:
         "date": extracted["date"],
         "source": SOURCE,
         "section": SECTION,
-        "orientation": ORIENTATION,
-        "factuality_tier": FACTUALITY_TIER,
-        "genre": GENRE,
         "title": title,
         "subtitle": extracted.get("subtitle", ""),
         "body": body,

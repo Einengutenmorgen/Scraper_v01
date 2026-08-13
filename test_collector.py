@@ -17,7 +17,7 @@ import socketserver
 import threading
 from urllib.parse import urlparse, parse_qs
 
-import v1_ria_analitika_scraper as R
+import scrape_ria as R
 
 ALL_IDS = list(range(2050000000, 2050000000 - 55, -1))   # 55 articles
 PAGE = 5

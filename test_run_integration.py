@@ -4,7 +4,7 @@
 and article HTML is served from the synthetic RIA-shaped fixture, so this proves
 JSONL output, per-article raw-HTML storage, and the run-summary distribution."""
 import json, os, tempfile
-import v1_ria_analitika_scraper as R
+import scrape_ria as R
 from test_extraction import build_article_html
 
 REFS = [
@@ -32,11 +32,13 @@ def main():
     assert len(lines) == 3, len(lines)
     required = {"url","article_id","date","title","body","content","byline",
                 "char_count","word_count","paragraph_count","mean_paragraph_len",
-                "sentence_count","has_byline","source","section","orientation",
-                "factuality_tier","genre"}
+                "sentence_count","has_byline","source","section"}
+    banned = {"orientation", "factuality_tier", "genre"}
     for ln in lines:
         rec = json.loads(ln)
         assert required <= set(rec), required - set(rec)
+        assert not (banned & set(rec)), (
+            f"outlet-level fields leaked into the record: {banned & set(rec)}")
         assert rec["content"].startswith(rec["title"])
     # raw HTML saved per article
     for ref in REFS:
