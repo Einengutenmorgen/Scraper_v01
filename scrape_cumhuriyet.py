@@ -915,8 +915,8 @@ def main(argv=None):
     ap.add_argument("--sitemap", action="store_true",
                     help="enumerate all opinion articles from posts.xml (full "
                          "depth; bypasses the JS load-more)")
-    ap.add_argument("--out", default="out/cumhuriyet.jsonl")
-    ap.add_argument("--raw-dir", default="raw_store")
+    ap.add_argument("--out", default="output/cumhuriyet.jsonl")
+    ap.add_argument("--raw-dir", default="output/raw_store")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000

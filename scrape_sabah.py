@@ -765,8 +765,8 @@ def main(argv=None):
                          "--authors")
     ap.add_argument("--categories", default=",".join(ON_TARGET_CATEGORIES),
                     help="category hubs to discover from (with --discover)")
-    ap.add_argument("--out", default="out/sabah.jsonl")
-    ap.add_argument("--raw-dir", default="raw_store")
+    ap.add_argument("--out", default="output/sabah.jsonl")
+    ap.add_argument("--raw-dir", default="output/raw_store")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000

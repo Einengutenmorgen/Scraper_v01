@@ -555,8 +555,8 @@ def main(argv=None):
                     help="ALLOW-LIST: comma-separated slugs OR a path to a file "
                          "(one slug per line). Genre is per-author on Oda TV — "
                          "list only political/opinion columnists.")
-    ap.add_argument("--out", default="out/odatv.jsonl")
-    ap.add_argument("--raw-dir", default="raw_store")
+    ap.add_argument("--out", default="output/odatv.jsonl")
+    ap.add_argument("--raw-dir", default="output/raw_store")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000

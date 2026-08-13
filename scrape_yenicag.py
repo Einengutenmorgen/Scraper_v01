@@ -602,8 +602,8 @@ def main(argv=None):
                     help="comma-separated slugs OR a path to a file")
     ap.add_argument("--konuk-kalem", action="store_true",
                     help="also harvest the /konuk-kalem guest-opinion stream")
-    ap.add_argument("--out", default="out/yenicag.jsonl")
-    ap.add_argument("--raw-dir", default="raw_store")
+    ap.add_argument("--out", default="output/yenicag.jsonl")
+    ap.add_argument("--raw-dir", default="output/raw_store")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000

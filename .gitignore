@@ -11,3 +11,4 @@ __pycache__/
 
 # config, not data -- must be tracked despite *.csv above
 !sources.csv
+.DS_Store
