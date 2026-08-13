@@ -311,16 +311,38 @@ def parse_roster_authors(list_html: str, base: str = BASE):
 
 
 _SITEMAP_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
+# <url> blocks carry <lastmod>; pairing it with <loc> lets --since prune at
+# enumeration time instead of after fetching tens of thousands of articles.
+_SITEMAP_URL_RE = re.compile(
+    r"<url>(?P<block>.*?)</url>", re.IGNORECASE | re.DOTALL)
+_LASTMOD_RE = re.compile(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 _PAZAR_RE = re.compile(r"^/pazar-yazilari/[^/]+-(\d+)/?$")
 
 
-def parse_sitemap_urls(xml_text: str, exclude_authors=()):
+def parse_sitemap_urls(xml_text: str, exclude_authors=(), since=None):
     """From a posts sitemap, return (url, article_id) for opinion articles only
     — paths under /yazarlar/ (dropping excluded authors) and /pazar-yazilari/.
-    Pure/offline-testable."""
+
+    `since` (ISO date) drops entries whose <lastmod> predates the window. An
+    entry with no <lastmod> is KEPT: the article's own date is authoritative and
+    is checked downstream, so a missing hint must not silently shrink the frame.
+    Pure/offline-testable.
+    """
     exclude = set(exclude_authors)
     out, seen = [], set()
+    lastmod = {}
+    if since:
+        for m in _SITEMAP_URL_RE.finditer(xml_text):
+            block = m.group("block")
+            lm = _LASTMOD_RE.search(block)
+            lc = _SITEMAP_LOC_RE.search(block)
+            if lm and lc:
+                lastmod[lc.group(1).strip()] = lm.group(1)
     for loc in _SITEMAP_LOC_RE.findall(xml_text):
+        if since:
+            lm = lastmod.get(loc.strip())
+            if lm and lm < since:
+                continue
         parts = urlsplit(loc.strip())
         path = parts.path
         aid = None
@@ -850,7 +872,7 @@ def discover_opinion_authors(session):
     return COLLECTIVE_STREAMS + authors
 
 
-def collect_via_sitemap(session, limit, exclude_authors=(),
+def collect_via_sitemap(session, limit, exclude_authors=(), since=None,
                         sitemap_url=SITEMAP_POSTS, _depth=0):
     """Enumerate opinion article URLs from posts.xml (gz), bypassing the JS
     load-more. Recurses one level into a sitemap index. Returns (url, id)."""
@@ -865,7 +887,7 @@ def collect_via_sitemap(session, limit, exclude_authors=(),
     if "<sitemapindex" in xml[:2000].lower() and _depth < 2:
         pairs, seen = [], set()
         for child in _SITEMAP_LOC_RE.findall(xml):
-            for u, aid in collect_via_sitemap(session, limit, exclude_authors,
+            for u, aid in collect_via_sitemap(session, limit, exclude_authors, since,
                                               child.strip(), _depth + 1):
                 if aid not in seen:
                     seen.add(aid)
@@ -907,7 +929,7 @@ class _IncrementalWriter:
 
 
 def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
-        discover=False, use_sitemap=False):
+        discover=False, use_sitemap=False, since=None):
     import requests
     session = requests.Session()
     # Prime consent/session cookies from the homepage before article fetches —
@@ -916,7 +938,7 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
         session.get(BASE, headers=HEADERS, timeout=30, allow_redirects=True)
     except Exception:
         pass
-    records, ended, skipped = [], {}, []
+    records, ended, skipped, out_of_window = [], {}, [], []
     writer = _IncrementalWriter(out_path)   # records land on disk as they arrive
     seen_global = set()   # dedup by article_id across all authors/streams
 
@@ -931,6 +953,13 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
             html_text = _http_get(url, session, referer=referer)
             save_raw_html(aid, html_text, raw_dir)
             rec = build_record(url, aid, extract_article(html_text, url))
+            if since and rec.get("date") and rec["date"] < since:
+                # Cumhuriyet publishes no date on the author listing -- it is
+                # only in the article's own meta -- so outside the sitemap path
+                # the window can only be applied after the fetch. The page is
+                # still saved to the raw store, so nothing is wasted twice.
+                out_of_window.append(aid)
+                return
             records.append(rec)
             writer.write(rec)
         except ScrapeError as exc:
@@ -944,7 +973,7 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
 
     if use_sitemap:
         exclude = _fetch_exclude_authors(session)
-        pairs = collect_via_sitemap(session, limit, exclude)
+        pairs = collect_via_sitemap(session, limit, exclude, since)
         ended["__sitemap__"] = (f"{len(pairs)} urls from posts.xml "
                                 f"(excluded {len(exclude)} off-target authors)")
         for url, aid in pairs:
@@ -962,6 +991,9 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
             for url, aid in pairs:
                 _fetch_one(url, aid, referer=author_url)
 
+    if out_of_window:
+        print(f"[since] {len(out_of_window)} article(s) fetched but outside the "
+              f"window -- use --sitemap to prune before fetching", file=sys.stderr)
     writer.close()
     # Rewrite in one pass so the finished file is clean and ordered; the
     # incremental copy has already protected against a mid-run crash.
@@ -974,6 +1006,17 @@ def run(authors, limit, out_path, raw_dir, endpoint, use_playwright,
         json.dump(summary, fh, ensure_ascii=False, indent=2)
     print_summary(summary)
     return summary
+
+
+def _valid_since(value):
+    """Validate --since early: a typo must not silently widen the frame."""
+    if not value:
+        return None
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise SystemExit(f"--since must be YYYY-MM-DD, got {value!r}")
+    return value
 
 
 def main(argv=None):
@@ -997,6 +1040,11 @@ def main(argv=None):
                          "depth; bypasses the JS load-more)")
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--raw-dir", default=DEFAULT_RAW_DIR)
+    ap.add_argument("--since", metavar="YYYY-MM-DD",
+                    help="only keep articles published on/after this date. With "
+                         "--sitemap this prunes from <lastmod> BEFORE fetching; "
+                         "without it, Cumhuriyet exposes no listing date, so the "
+                         "window is applied after extraction (use --sitemap).")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000
@@ -1009,7 +1057,8 @@ def main(argv=None):
 
     try:
         run(authors, limit, args.out, args.raw_dir, args.endpoint,
-            args.playwright, discover=args.discover, use_sitemap=args.sitemap)
+            args.playwright, discover=args.discover, use_sitemap=args.sitemap,
+            since=_valid_since(args.since))
     except ScrapeError as exc:
         print(f"FAIL LOUD: {exc}", file=sys.stderr)
         sys.exit(2)

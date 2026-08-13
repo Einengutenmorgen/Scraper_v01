@@ -677,10 +677,18 @@ LIVE_NOTES = [
 ]
 
 
-def collect_author_archive(author, limit, session):
+def collect_author_archive(author, limit, session, since=None):
     """Paginate /yazarlar/{author}/arsiv/getall?page=N until empty / all-seen /
-    404. (getall alone is only the newest ~20-item window — confirmed live.)
-    Returns (links, ended_reason) where each link is (url, slug, date, uid)."""
+    404 / past the --since window. (getall alone is only the newest ~20-item
+    window -- confirmed live.)
+    Returns (links, ended_reason) where each link is (url, slug, date, uid).
+
+    `since` (ISO date) is applied HERE rather than downstream because the date
+    is already in the article URL path and the archive is newest-first: once a
+    whole page falls before the cutoff, every later page does too, so we stop
+    paginating instead of fetching thousands of out-of-window articles to throw
+    them away. Sabah archives run back to ~2006.
+    """
     out, seen = [], set()
     page = 1
     while len(out) < limit and page <= MAX_PAGES:
@@ -697,7 +705,12 @@ def collect_author_archive(author, limit, session):
         uids = [uid for _, _, _, uid in links]
         if all(u in seen for u in uids):
             return out[:limit], f"stop_all_seen(p{page})"
-        for link in links:
+        in_window = links if not since else [l for l in links if l[2] >= since]
+        if since and not in_window:
+            # Newest-first ordering: a fully out-of-window page means every
+            # later page is too.
+            return out[:limit], f"stop_since({since},p{page})"
+        for link in in_window:
             if link[3] not in seen:
                 seen.add(link[3])
                 out.append(link)
@@ -747,7 +760,7 @@ class _IncrementalWriter:
             self.fh.close()
 
 
-def run(authors, limit, out_path, raw_dir):
+def run(authors, limit, out_path, raw_dir, since=None):
     import requests
     session = requests.Session()
     records, ended, skipped = [], {}, []
@@ -755,7 +768,7 @@ def run(authors, limit, out_path, raw_dir):
     seen_global = set()   # dedup by uid across all authors (shared rails)
     for author in authors:
         try:
-            links, reason = collect_author_archive(author, limit, session)
+            links, reason = collect_author_archive(author, limit, session, since)
         except ScrapeError as exc:
             # A persistent listing failure for ONE author (e.g. HTTP 405 after
             # retries) is recorded and skipped — it must not abort the harvest.
@@ -796,6 +809,17 @@ def run(authors, limit, out_path, raw_dir):
     return summary
 
 
+def _valid_since(value):
+    """Validate --since early: a typo must not silently widen the frame."""
+    if not value:
+        return None
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise SystemExit(f"--since must be YYYY-MM-DD, got {value!r}")
+    return value
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Sabah columnist scraper")
     mode = ap.add_mutually_exclusive_group()
@@ -812,6 +836,11 @@ def main(argv=None):
                     help="category hubs to discover from (with --discover)")
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--raw-dir", default=DEFAULT_RAW_DIR)
+    ap.add_argument("--since", metavar="YYYY-MM-DD",
+                    help="only collect articles published on/after this date. "
+                         "Applied during pagination (the date is in the article "
+                         "URL and the archive is newest-first), so out-of-window "
+                         "pages are never fetched.")
     args = ap.parse_args(argv)
 
     limit = SMOKE_TARGET if not args.full else 100000
@@ -829,7 +858,7 @@ def main(argv=None):
         authors = [a.strip() for a in args.authors.split(",") if a.strip()]
 
     try:
-        run(authors, limit, args.out, args.raw_dir)
+        run(authors, limit, args.out, args.raw_dir, since=_valid_since(args.since))
     except ScrapeError as exc:
         print(f"FAIL LOUD: {exc}", file=sys.stderr)
         sys.exit(2)
