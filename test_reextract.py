@@ -48,17 +48,25 @@ def main():
         # 2. real run is idempotent
         RX.reextract("ria")
         after = [json.loads(l) for l in open(R.OUTPUT_JSONL, encoding="utf-8")]
-        assert before == after, "re-extraction changed records with no code change"
+        # Compare by key: re-extraction emits in sorted-filename order, which is
+        # deterministic (the scraper emits in collection order). Order differing
+        # is correct behaviour; CONTENT differing would be the bug.
+        key = lambda rs: {r["article_id"]: r for r in rs}
+        assert key(before) == key(after), \
+            "re-extraction changed records with no code change"
         assert os.path.exists(R.OUTPUT_JSONL + ".bak"), "no .bak kept"
         print("  round-trip identical + .bak kept  OK")
 
         # 3. an extraction change is REPORTED, not silent
-        orig = R._strip_boilerplate
-        R._strip_boilerplate = lambda t: orig(t) + "\n\nSENTINEL PARAGRAPH."
+        orig = R.compute_signals
+        R.compute_signals = lambda body: orig(body + "\n\nSENTINEL PARAGRAPH.")
+        orig_ex = R.trafilatura.extract
+        R.trafilatura.extract = lambda h, **kw: (orig_ex(h, **kw) or "") + "\n\nSENTINEL."
         try:
             stats = RX.reextract("ria", dry_run=True)
         finally:
-            R._strip_boilerplate = orig
+            R.compute_signals = orig
+            R.trafilatura.extract = orig_ex
         assert stats["changed"] == len(REFS), stats
         assert "body" in stats["fields_changed"], stats["fields_changed"]
         assert "word_count" in stats["fields_changed"], stats["fields_changed"]

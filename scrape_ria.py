@@ -533,7 +533,12 @@ _TRAFILATURA_KWARGS = dict(
     include_links=False,
     include_formatting=False,
     favor_precision=True,       # aggressively prune boilerplate / related rails
-    deduplicate=True,
+    deduplicate=False,
+    # deduplicate=False is DELIBERATE. trafilatura's dedup cache is a
+    # PROCESS-GLOBAL LRU: a paragraph seen in earlier articles is silently
+    # dropped from later ones, cumulatively and in scrape order, so the
+    # corpus stops being reproducible and word counts quietly shrink.
+    # Repeated boilerplate is handled explicitly by _strip_boilerplate.
     target_language="ru",
 )
 

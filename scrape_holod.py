@@ -106,12 +106,21 @@ _ROLE_RE = re.compile(
 
 
 def _clean_name(name: str) -> Optional[str]:
+    """Normalise a byline. Returns None for anything that is not a name.
+
+    Holod's WordPress account display name is sometimes a bare dash, which is a
+    placeholder, not an author. Requiring at least two letters keeps dashes,
+    bullets and stray punctuation out of the `author` field instead of letting
+    them masquerade as a byline.
+    """
     if not name:
         return None
     name = re.sub(r"\s+", " ", str(name)).strip()
     m = _ROLE_RE.search(name)          # cut a mashed-on bio/affiliation
     if m and m.start() > 0:
         name = name[:m.start()].strip()
+    if len(re.findall(r"\w", name, flags=re.UNICODE)) < 2:
+        return None
     return name or None
 
 
@@ -238,7 +247,10 @@ def _collect_wp_api(session, target) -> Optional[list[Ref]]:
             seen.add(ref.article_id)
             # author + interview tag from embedded metadata
             try:
-                ref.author = p["_embedded"]["author"][0]["name"]
+                # WP CMS account, not the byline -- kept only as a fallback for
+                # pages whose article__info block is missing. _clean_name drops
+                # placeholders like a bare dash.
+                ref.author = _clean_name(p["_embedded"]["author"][0]["name"])
             except Exception:
                 pass
             terms = []
@@ -342,7 +354,12 @@ def collect(target_articles: int) -> tuple[list[Ref], dict]:
 # ============================ extraction ============================
 _TRAFI = dict(output_format="txt", include_comments=False, include_tables=False,
               include_images=False, include_links=False, include_formatting=False,
-              favor_precision=True, deduplicate=True, target_language="ru")
+              favor_precision=True, deduplicate=False, target_language="ru")
+# deduplicate=False is DELIBERATE. trafilatura's dedup cache is a
+# PROCESS-GLOBAL LRU: a paragraph seen in earlier articles is silently
+# dropped from later ones, cumulatively and in scrape order, so the
+# corpus stops being reproducible and word counts quietly shrink.
+# Repeated boilerplate is handled explicitly by _strip_boilerplate.
 
 
 @dataclass
@@ -470,7 +487,12 @@ def extract_record(ref: Ref, html: str) -> Record:
     body = _strip_boilerplate(body).strip()
     title, subtitle, author, rt = _extract_meta(html)
     title = title or ""
-    author = ref.author or author
+    # PRECEDENCE: the article page's "Автор:" block is the byline. `ref.author`
+    # comes from the WordPress `_embedded.author` account, which is a CMS user
+    # (often a desk account, sometimes a bare "—" placeholder) and is NOT the
+    # byline. It is a fallback only -- reversing this order silently overwrote
+    # every correct byline with the WP account name.
+    author = author or _clean_name(ref.author or "")
     reading = ref.reading_time or rt
     sig = _signals(body)
 

@@ -265,7 +265,12 @@ def collect(target_articles: int) -> tuple[list[Ref], dict]:
 # ============================ extraction ============================
 _TRAFI = dict(output_format="txt", include_comments=False, include_tables=False,
               include_images=False, include_links=False, include_formatting=False,
-              favor_precision=True, deduplicate=True, target_language="ru")
+              favor_precision=True, deduplicate=False, target_language="ru")
+# deduplicate=False is DELIBERATE. trafilatura's dedup cache is a
+# PROCESS-GLOBAL LRU: a paragraph seen in earlier articles is silently
+# dropped from later ones, cumulatively and in scrape order, so the
+# corpus stops being reproducible and word counts quietly shrink.
+# Repeated boilerplate is handled explicitly by _strip_boilerplate.
 
 
 @dataclass
