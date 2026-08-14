@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import json
 import os
 import statistics
@@ -41,6 +42,12 @@ from collections import Counter, defaultdict
 from reextract import ADAPTERS, BANNED
 
 REGISTRY = "sources.csv"
+
+# Dates outside this range are parse failures, not old articles. The oldest
+# source in the corpus starts in 2007; anything before 2000 came from a regex
+# that matched a year mentioned IN the article, or from an epoch default.
+EARLIEST_PLAUSIBLE = "2000-01-01"
+LATEST_PLAUSIBLE = (dt.date.today() + dt.timedelta(days=2)).isoformat()
 
 # Field name differences between scrapers, normalised on the way in.
 ALIASES = {"byline": "author"}      # RIA calls it byline; everyone else author
@@ -88,7 +95,7 @@ def read_source(name: str, path: str, registry: dict) -> list[dict]:
     if not raw:
         raise SystemExit(f"{name}: {path} is empty")
 
-    out = []
+    out, bad_dates = [], []
     for i, r in enumerate(raw):
         for old, new in ALIASES.items():
             if old in r and new not in r:
@@ -108,6 +115,10 @@ def read_source(name: str, path: str, registry: dict) -> list[dict]:
                 f"Add it before merging — country/lang cannot be guessed.")
         meta = registry[src]
 
+        d = r.get("date") or ""
+        if d and not (EARLIEST_PLAUSIBLE <= d <= LATEST_PLAUSIBLE):
+            bad_dates.append((r.get("article_id"), d))
+
         content = r.get("content") or ""
         if not content.strip():
             raise SystemExit(
@@ -115,8 +126,14 @@ def read_source(name: str, path: str, registry: dict) -> list[dict]:
                 f"That is the field Label Studio annotates; a blank one would "
                 f"become an unannotatable task.")
 
+        # Sabah's article_id is the TITLE SLUG, and columnists reuse slugs across
+        # years -- 62 collisions observed in a single run. Its `uid`
+        # ("YYYY-MM-DD__slug") is unique by construction, so prefer it wherever a
+        # scraper supplies one. doc_id is the annotation key; a collision would
+        # silently merge two different articles into one task.
+        key = r.get("uid") or r["article_id"]
         rec = {
-            "doc_id": f"{src}:{r['article_id']}",
+            "doc_id": f"{src}:{key}",
             "source": src,
             "section": r.get("section", ""),
             "country": meta["country"],
@@ -141,6 +158,15 @@ def read_source(name: str, path: str, registry: dict) -> list[dict]:
             "_outlet": {k: meta.get(k, "") for k in OUTLET},
         }
         out.append(rec)
+
+    if bad_dates:
+        # 1970-01-01 is an epoch default (a parse that returned 0 instead of
+        # failing); a 1939 or 1945 date is a year lifted out of the article TEXT
+        # by a too-greedy date regex. Both are silent parse failures, and a wrong
+        # date silently corrupts any time-window or trend analysis.
+        print(f"  !! {name}: {len(bad_dates)} implausible date(s) "
+              f"(outside {EARLIEST_PLAUSIBLE}..{LATEST_PLAUSIBLE}): "
+              f"{bad_dates[:6]}")
     return out
 
 

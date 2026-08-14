@@ -53,9 +53,8 @@ def setup(tmp):
     write(os.path.join(tmp, "output", "holod_opinions.jsonl"),
           [rec("holod", "slug-a", suspected_interview=True),
            rec("holod", "slug-b", suspected_interview=False)])
-    # TR family: extra `uid`, same output/ root
+    # TR family: same output/ root (only Sabah carries `uid`)
     tr = rec("cumhuriyet", "2510001", section="yazarlar")
-    tr["uid"] = "2026-01-15__slug"
     write(os.path.join(tmp, "output", "cumhuriyet.jsonl"), [tr])
     return tmp
 
@@ -140,6 +139,29 @@ def main():
         o = run(tmp, "--out", "corpus.csv", "--root", tmp)
         assert "ZERO bylines" in o and "ng" in o, o[-400:]
         print("  warns loudly on a source with zero bylines  OK")
+
+        # doc_id must use uid where present -- Sabah slugs collide across years
+        import subprocess
+        dup_a = rec("sabah", "iste-butun-mesele-bu", section="yazarlar")
+        dup_a["uid"] = "2021-03-04__iste-butun-mesele-bu"
+        dup_b = rec("sabah", "iste-butun-mesele-bu", section="yazarlar")
+        dup_b["uid"] = "2024-09-11__iste-butun-mesele-bu"
+        write(os.path.join(tmp, "output", "sabah.jsonl"), [dup_a, dup_b])
+        run(tmp, "--out", "sab.csv", "--root", tmp)
+        srows = list(csv.DictReader(open(os.path.join(tmp, "sab.csv"),
+                                        encoding="utf-8", newline="")))
+        ids = {r["doc_id"] for r in srows if r["source"] == "sabah"}
+        assert len(ids) == 2, ids
+        assert all("__" in i for i in ids), ids
+        print("  same slug, different uid -> distinct doc_ids  OK")
+
+        # implausible dates are reported, not swallowed
+        odd = rec("ng", "z1"); odd["date"] = "1970-01-01"
+        write(os.path.join(tmp, "output", "ng_opinions.jsonl"), [odd])
+        o = run(tmp, "--out", "d.csv", "--root", tmp)
+        assert "implausible date" in o, o[-400:]
+        os.remove(os.path.join(tmp, "output", "ng_opinions.jsonl"))
+        print("  implausible date (1970-01-01) reported loudly  OK")
 
         print("\nMERGE CORPUS TEST PASSED")
     finally:

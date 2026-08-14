@@ -34,6 +34,7 @@ import json
 import os
 import random
 import re
+from datetime import date
 import time
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -172,14 +173,32 @@ def _get(session, url):
     raise ScrapeError(f"GET failed after {MAX_RETRIES}: {url} ({last})")
 
 
+# A publication date outside this range is not an old article -- it is a year
+# the regex found in the article TEXT. Observed live: 1939-09-17, 1945-10-24,
+# 1990-03-11 on an outlet that launched in 2013. Without the guard these become
+# the record's `date` and silently corrupt any time-window analysis.
+PLAUSIBLE_YEARS = (2010, 2100)
+
+
 def parse_ru_date(text: str) -> Optional[str]:
-    m = RU_DATE_RE.search(text or "")
-    if not m:
-        return None
-    day, mon, year = int(m.group(1)), m.group(2).lower(), int(m.group(3))
-    if mon not in RU_MONTHS:
-        return None
-    return f"{year:04d}-{RU_MONTHS[mon]:02d}-{day:02d}"
+    """First plausible Russian-format date in `text`, else None.
+
+    RU_DATE_RE scans the whole blob, so on a page where the byline block is
+    missing it happily matches a historical date in the body. Scan every match
+    and take the first one that could actually be a publication date.
+    """
+    for m in RU_DATE_RE.finditer(text or ""):
+        day, mon, year = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        if mon not in RU_MONTHS:
+            continue
+        if not (PLAUSIBLE_YEARS[0] <= year <= PLAUSIBLE_YEARS[1]):
+            continue
+        try:
+            date(year, RU_MONTHS[mon], day)
+        except ValueError:
+            continue
+        return f"{year:04d}-{RU_MONTHS[mon]:02d}-{day:02d}"
+    return None
 
 
 def humanize_slug(slug: str) -> str:
