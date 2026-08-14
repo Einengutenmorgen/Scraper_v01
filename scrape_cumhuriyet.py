@@ -601,8 +601,21 @@ def _encode_url(url: str) -> str:
 # Transient server / rate-limit responses. A 5xx or a 429 mid-harvest is the
 # site having a bad second, NOT a reason to discard hours of collection --
 # retry with backoff and only fail loud once the site is genuinely unavailable.
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-MAX_RETRIES = 5
+# 429 rate-limit, 5xx upstream, and 520-527 CLOUDFLARE edge errors (522 =
+# origin connection timed out). All transient under sustained crawling; failing
+# on them discards articles that a second attempt would have returned.
+RETRYABLE_STATUS = {429} | set(range(500, 505)) | set(range(520, 528))
+REQUEST_TIMEOUT = 45          # these sites stall under sustained load
+
+
+class _TransientError(ScrapeError):
+    """Retryable: a timeout, dropped connection, or transient 4xx/5xx.
+
+    Distinguished from ScrapeError so the retry wrapper backs off on these and
+    re-raises immediately on everything else (a 404, a redirect loop, a real
+    anomaly) instead of burning six attempts on a permanent failure.
+    """
+MAX_RETRIES = 6
 
 def _http_get(url: str, session, referer: str = None) -> str:
     """Fetch with backoff on transient server / rate-limit responses.
@@ -616,12 +629,8 @@ def _http_get(url: str, session, referer: str = None) -> str:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             return _http_get_once(url, session, referer)
-        except ScrapeError as exc:
-            msg = str(exc)
-            code = next((c for c in RETRYABLE_STATUS if f"HTTP {c} " in msg), None)
-            if code is None:
-                raise
-            last = f"HTTP {code}"
+        except _TransientError as exc:
+            last = str(exc)[:90]
         if attempt < MAX_RETRIES:
             print(f"  [retry {attempt}/{MAX_RETRIES - 1}] {last} for {url} "
                   f"-- waiting {delay:.0f}s")
@@ -648,8 +657,12 @@ def _http_get_once(url: str, session, referer: str = None) -> str:
                 f"cookie priming are sent; if it still loops, run with "
                 f"--playwright."
             ) from exc
-        raise ScrapeError(f"Request failed for {url}: {exc}") from exc
+        # A read timeout or dropped connection is TRANSIENT. Marking it
+        # retryable lets the wrapper back off instead of skipping the article.
+        raise _TransientError(f"Request failed for {url}: {exc}") from exc
     if resp.status_code >= 400:
+        if resp.status_code in RETRYABLE_STATUS:
+            raise _TransientError(f"HTTP {resp.status_code} for {url}")
         raise ScrapeError(f"HTTP {resp.status_code} for {url}")
     text = resp.text
     ce = resp.headers.get("Content-Encoding", "")

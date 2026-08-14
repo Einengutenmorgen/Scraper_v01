@@ -62,6 +62,7 @@ import time
 from datetime import datetime, date
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import requests
 import trafilatura
 from lxml import html as lxml_html
 
@@ -421,10 +422,25 @@ def extract_article(article_html: str, url: str, url_date: str,
                 or _meta(doc, prop="article:published_time"))
     meta_date = parse_iso_date(iso_meta)
     if meta_date and meta_date != url_date:
-        raise ScrapeError(
-            f"Date mismatch for {url}: url={url_date} meta={meta_date}"
-        )
-    date_iso = url_date  # authoritative (cross-checked above)
+        # A +/-1 day gap is a TIMEZONE boundary, not corruption: the URL carries
+        # the local publication date while the meta timestamp is UTC (or +03:00),
+        # so anything published near midnight lands on the neighbouring day.
+        # Observed live on 2021-12-03, 2023-01-25, 2023-12-19 across MANY authors
+        # at once -- the tell that it is a date boundary, not a per-article bug.
+        # Failing loud here silently deleted valid columns; only a real
+        # discrepancy (> 1 day) means the URL and the page disagree about which
+        # article this is.
+        try:
+            gap = abs((date.fromisoformat(meta_date)
+                       - date.fromisoformat(url_date)).days)
+        except ValueError:
+            gap = 99
+        if gap > 1:
+            raise ScrapeError(
+                f"Date mismatch for {url}: url={url_date} meta={meta_date} "
+                f"({gap} days apart -- not a timezone boundary)"
+            )
+    date_iso = url_date  # authoritative: the URL path is the canonical local date
 
     body = sabah_extract_body(article_html)
     if not body.strip():
@@ -564,7 +580,13 @@ def _assert_decodable(text, url, resp):
 
 
 # Statuses that are retried with backoff (rate-limit / anti-bot), not fatal.
-_RETRYABLE_STATUS = {403, 405, 429, 503}
+# 403/405/429 are Sabah's anti-bot / rate-limit responses under volume.
+# 5xx are upstream hiccups. 520-527 are CLOUDFLARE edge errors (522 = origin
+# connection timed out) -- extremely common on these sites under sustained
+# crawling and always transient.
+REQUEST_TIMEOUT = 45          # these sites stall under sustained load
+_RETRYABLE_STATUS = ({403, 405, 429} | set(range(500, 505))
+                     | set(range(520, 528)))
 
 _CF_SIGNS = ("Just a moment", "cf-browser-verification", "Attention Required",
              "Checking your browser", "cf-challenge")
@@ -580,11 +602,21 @@ def detect_cloudflare_block(status_code, text):
     return None
 
 
-def fetch(url, session, max_retries=4, allow_404=False):
+def fetch(url, session, max_retries=6, allow_404=False):
     delay = 1.5
     last = None
     for attempt in range(1, max_retries + 1):
-        resp = session.get(url, headers=HEADERS, timeout=30)
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            # A read timeout / dropped connection is an EXCEPTION, not a status
+            # code, so it used to fly past this loop and abort the whole run.
+            # Over a multi-hour harvest one of these is a certainty.
+            last = f"{type(exc).__name__}: {exc}"
+            print(f"  [retry {attempt}/{max_retries}] {last[:90]} for {url}")
+            time.sleep(delay)
+            delay *= 2
+            continue
         if resp.status_code == 404 and allow_404:
             return None
         block = detect_cloudflare_block(resp.status_code, resp.text)
@@ -600,7 +632,7 @@ def fetch(url, session, max_retries=4, allow_404=False):
         time.sleep(delay)
         delay *= 2
     raise CloudflareBlock(
-        f"Blocked after {max_retries} attempts for {url}: {last}"
+        f"Failed after {max_retries} attempts for {url}: {last}"
     )
 
 

@@ -437,15 +437,19 @@ def save_raw_html(article_id, html_text, raw_dir):
 # Transient server / rate-limit responses. A 5xx or a 429 mid-harvest is the
 # site having a bad second, NOT a reason to discard hours of collection --
 # retry with backoff and only fail loud once the site is genuinely unavailable.
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-MAX_RETRIES = 5
+# 429 rate-limit, 5xx upstream, and 520-527 CLOUDFLARE edge errors (522 =
+# origin connection timed out). All transient under sustained crawling; failing
+# on them discards articles that a second attempt would have returned.
+RETRYABLE_STATUS = {429} | set(range(500, 505)) | set(range(520, 528))
+REQUEST_TIMEOUT = 45          # these sites stall under sustained load
+MAX_RETRIES = 6
 
 def _http_get(url, session, allow_404=False):
     assert_same_domain(url)
     delay, last = 2.0, None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = session.get(url, headers=HEADERS, timeout=30)
+            resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         except requests.RequestException as exc:      # dropped connection, DNS, TLS
             last = f"{type(exc).__name__}: {exc}"
             resp = None
